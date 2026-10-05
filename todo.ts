@@ -14,11 +14,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, validateGuidanceFields } from "./config.js";
-import { formatPlanOpen, formatStatusLabel, t } from "./state/i18n-bridge.js";
-import { selectPlanProgress } from "./state/plan.js";
-import { selectTasksByStatus, selectTodoCounts, selectVisibleTasks } from "./state/selectors.js";
+import { formatProgress, t } from "./state/i18n-bridge.js";
+import { selectTasksByStatus, selectVisibleTasks } from "./state/selectors.js";
 import type { TaskState } from "./state/state.js";
-import { applyTaskMutation, type Op } from "./state/state-reducer.js";
+import { applyTaskCall, type Op } from "./state/state-reducer.js";
 import { commitState, getRenderState, getState, sid } from "./state/store.js";
 import { buildToolResult } from "./tool/response-envelope.js";
 import { sanitizeTerminalText } from "./tool/sanitize.js";
@@ -46,7 +45,7 @@ const SECTION_DEFERRED = "── Deferred ──";
 // ---------------------------------------------------------------------------
 
 export { isTransitionValid } from "./state/invariants.js";
-export { applyTaskMutation } from "./state/state-reducer.js";
+export { applyTaskCall, applyTaskMutation } from "./state/state-reducer.js";
 export { __resetState, getNextId, getTodos, setActiveRenderSession, sid } from "./state/store.js";
 export { deriveBlocks, detectCycle } from "./state/task-graph.js";
 export type { Task, TaskAction, TaskDetails, TaskStatus } from "./tool/types.js";
@@ -66,6 +65,7 @@ export const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	'Marking a task completed requires evidence: the check that proves it (command + result, commit, or test name), e.g. {"action":"update","id":3,"status":"completed","evidence":"npm test: 42 passed"}. No evidence means it is not done.',
 	"Todos marked [plan] are the approved plan's items, verbatim. They can't be edited or deleted: complete each with evidence, or set status deferred with a reason and tell the user. Never tell the user the work is done while plan items are open.",
 	"Use blockedBy to express dependencies (A is blocked by B). On create, pass blockedBy as the initial set. On update, use addBlockedBy / removeBlockedBy (additive merge — do not resend the full array). Cycles are rejected.",
+	'Batch with ops: to open or close many todos, pass ONE call {"ops":[{"action":"update","id":1,"status":"completed","evidence":"..."}, ...]} instead of one call per todo. Each op carries its own evidence/reason. A batch is atomic: if any op is invalid nothing changes and the error names the op (ops[3]: ...). list/get ops are answered from the final state. Do not mix ops with top-level fields.',
 	"list hides tombstoned (deleted) tasks by default; pass includeDeleted:true to see them. Pass status to filter by a single status.",
 	"Subject must be short and imperative (e.g. 'Research existing tool'); description is for long-form detail. activeForm is a present-continuous label shown while in_progress.",
 ];
@@ -82,10 +82,10 @@ export function registerTodoTool(pi: ExtensionAPI): void {
 		parameters: TodoParamsSchema,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = applyTaskMutation(getState(sid(ctx)), params.action, params as TaskMutationParams);
+			const result = applyTaskCall(getState(sid(ctx)), params as TaskMutationParams);
 			commitState(sid(ctx), result.state);
 			notifyPlanDeferral(ctx, result.op, result.state);
-			return buildToolResult(params.action, params as TaskMutationParams, result.state, result.op);
+			return buildToolResult(result.action, params as TaskMutationParams, result.state, result.op);
 		},
 
 		// renderCall reflects the FOREGROUND slot, not the calling session's. Pi's
@@ -115,7 +115,12 @@ function notifyPlanDeferral(
 	op: Op,
 	state: TaskState,
 ): void {
-	if (!ctx.hasUI || op.kind !== "update" || op.toStatus !== "deferred" || op.fromStatus === "deferred") return;
+	if (!ctx.hasUI) return;
+	if (op.kind === "batch") {
+		for (const sub of op.results) notifyPlanDeferral(ctx, sub, state);
+		return;
+	}
+	if (op.kind !== "update" || op.toStatus !== "deferred" || op.fromStatus === "deferred") return;
 	const task = state.tasks.find((x) => x.id === op.id);
 	if (task?.source !== "plan") return;
 	ctx.ui.notify(
@@ -143,17 +148,8 @@ export function registerTodosCommand(pi: ExtensionAPI): void {
 				return;
 			}
 			const groups = selectTasksByStatus(state);
-			const counts = selectTodoCounts(state);
 
-			const header: string[] = [];
-			if (counts.completed > 0) header.push(`${counts.completed}/${counts.total} ${formatStatusLabel("completed")}`);
-			if (counts.inProgress > 0) header.push(`${counts.inProgress} ${formatStatusLabel("in_progress")}`);
-			if (counts.pending > 0) header.push(`${counts.pending} ${formatStatusLabel("pending")}`);
-			if (counts.deferred > 0) header.push(`${counts.deferred} ${formatStatusLabel("deferred")}`);
-			const plan = selectPlanProgress(state);
-			if (plan) header.push(formatPlanOpen(plan.open, plan.total));
-
-			const lines: string[] = [header.join(" · ")];
+			const lines: string[] = [formatProgress(state)];
 			if (groups.pending.length > 0) {
 				lines.push(t("command.section.pending", SECTION_PENDING));
 				for (const task of groups.pending) lines.push(formatCommandTaskLine(task, "○"));
