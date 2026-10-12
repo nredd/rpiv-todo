@@ -21,7 +21,7 @@
 
 import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
-import { COLLAPSE_KEY_OFF, resolveCollapseKey } from "./config.js";
+import { COLLAPSE_KEY_OFF, getCollapseOnResume, resolveCollapseKey } from "./config.js";
 import { registerPlanHooks } from "./plan-hooks.js";
 import { I18N_NAMESPACE } from "./state/i18n-bridge.js";
 import { replayFromBranch } from "./state/replay.js";
@@ -220,7 +220,7 @@ export default function (pi: ExtensionAPI, importOverlay: TodoOverlayImporter = 
 		if (id !== getActiveRenderSession()) return;
 		const generation = ++lifecycleGeneration;
 		uiCtx = ctx.ui;
-		collapseOnBind = event.reason === "resume";
+		collapseOnBind = event.reason === "resume" && getCollapseOnResume();
 		try {
 			await updateTodoOverlay(generation);
 		} finally {
