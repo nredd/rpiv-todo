@@ -13,9 +13,18 @@ import { detectCycle } from "./task-graph.js";
  * `op.kind === "error"` without a side-channel boolean.
  */
 export type Op =
-	| { kind: "create"; taskId: number }
-	| { kind: "update"; id: number; fromStatus: TaskStatus; toStatus: TaskStatus; changed: boolean }
-	| { kind: "delete"; id: number; subject: string }
+	| { kind: "create"; taskId: number; task?: Task }
+	| {
+			kind: "update";
+			id: number;
+			fromStatus: TaskStatus;
+			toStatus: TaskStatus;
+			changed: boolean;
+			task?: Task;
+			/** Present when this update newly defers the task or changes its deferred reason. */
+			deferredReason?: string;
+	  }
+	| { kind: "delete"; id: number; subject: string; task?: Task }
 	| { kind: "list"; statusFilter?: TaskStatus; includeDeleted: boolean }
 	| { kind: "get"; task: Task }
 	| { kind: "clear"; count: number; kept: number }
@@ -123,7 +132,7 @@ export function applyTaskMutation(state: TaskState, action: TaskOpAction, params
 			const newTasks = [...state.tasks, newTask];
 			return {
 				state: { ...state, tasks: newTasks, nextId: state.nextId + 1 },
-				op: { kind: "create", taskId: newTask.id },
+				op: { kind: "create", taskId: newTask.id, task: newTask },
 			};
 		}
 
@@ -236,6 +245,10 @@ export function applyTaskMutation(state: TaskState, action: TaskOpAction, params
 					fromStatus: current.status,
 					toStatus: newStatus,
 					changed: taskChanged(current, updated),
+					task: updated,
+					...(newStatus === "deferred" && current.reason !== updated.reason
+						? { deferredReason: updated.reason }
+						: {}),
 				},
 			};
 		}
@@ -270,7 +283,7 @@ export function applyTaskMutation(state: TaskState, action: TaskOpAction, params
 			newTasks[idx] = updated;
 			return {
 				state: { ...state, tasks: newTasks },
-				op: { kind: "delete", id: updated.id, subject: updated.subject },
+				op: { kind: "delete", id: updated.id, subject: updated.subject, task: updated },
 			};
 		}
 

@@ -1,4 +1,4 @@
-import { STATE_ENTRY_TYPE, type TaskDetails, type TaskSnapshot } from "../tool/types.js";
+import { STATE_ENTRY_TYPE, type Task, type TaskSnapshot } from "../tool/types.js";
 import { EMPTY_STATE, type TaskState } from "./state.js";
 
 /**
@@ -6,14 +6,60 @@ import { EMPTY_STATE, type TaskState } from "./state.js";
  * shape. Defensive — branch entries from older or corrupt sessions are
  * skipped silently.
  */
-export function isTaskDetails(value: unknown): value is TaskDetails {
-	if (!value || typeof value !== "object") return false;
-	const v = value as Record<string, unknown>;
-	return Array.isArray(v.tasks) && typeof v.nextId === "number";
+export function isTaskDetails(value: unknown): value is TaskSnapshot {
+	if (!isRecord(value)) return false;
+	if (!Array.isArray(value.tasks) || !positiveId(value.nextId)) return false;
+	if (!value.tasks.every(isTask)) return false;
+	const ids = new Set(value.tasks.map((task) => task.id));
+	if (ids.size !== value.tasks.length || value.tasks.some((task) => task.id >= (value.nextId as number))) return false;
+	if (value.tasks.some((task) => task.blockedBy?.some((id) => id === task.id || !ids.has(id)))) return false;
+	return (
+		value.plan === undefined ||
+		(isRecord(value.plan) && typeof value.plan.id === "string" && typeof value.plan.title === "string")
+	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function positiveId(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** Validate structure, not newer business rules: old completions need not have evidence. */
+function isTask(value: unknown): value is Task {
+	if (!isRecord(value) || !positiveId(value.id) || typeof value.subject !== "string") return false;
+	if (!["pending", "in_progress", "completed", "deferred", "deleted"].includes(value.status as string)) return false;
+	for (const field of ["description", "activeForm", "owner", "planGroup", "planText", "evidence", "reason"]) {
+		if (value[field] !== undefined && typeof value[field] !== "string") return false;
+	}
+	if (value.source !== undefined && value.source !== "plan") return false;
+	if (value.planIdentity !== undefined) {
+		const identity = value.planIdentity;
+		if (
+			!isRecord(identity) ||
+			identity.version !== 1 ||
+			typeof identity.workBody !== "string" ||
+			!Array.isArray(identity.headingPath) ||
+			!identity.headingPath.every((heading) => typeof heading === "string")
+		)
+			return false;
+	}
+	if (value.planProvenance !== undefined) {
+		const provenance = value.planProvenance;
+		if (!isRecord(provenance) || typeof provenance.planId !== "string" || !positiveId(provenance.taskId))
+			return false;
+	}
+	if (value.metadata !== undefined && !isRecord(value.metadata)) return false;
+	if (value.blockedBy !== undefined && (!Array.isArray(value.blockedBy) || !value.blockedBy.every(positiveId)))
+		return false;
+	return true;
 }
 
 /** Snapshot carried by a branch entry: a `todo` tool result, or a `rpiv-todo-state` custom entry. */
 function snapshotOf(entry: unknown): TaskSnapshot | undefined {
+	if (!isRecord(entry)) return undefined;
 	const e = entry as {
 		type?: string;
 		customType?: string;
